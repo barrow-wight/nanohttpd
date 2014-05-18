@@ -1,12 +1,22 @@
 package fi.iki.elonen;
 
+import java.awt.BorderLayout;
+import java.awt.Container;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
+import java.net.InetAddress;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -17,8 +27,49 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.StringTokenizer;
 
+import javax.swing.AbstractAction;
+import javax.swing.Box;
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JFrame;
+import javax.swing.JScrollBar;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+
 public class SimpleWebServer extends NanoHTTPD {
-    /**
+	
+	static public enum Option {
+		HOME("home", 'h'),
+		QUIET("quiet", 'q'),
+		PORT("port", 'p'),
+		DIR("dir", 'd'),
+		LICENCE("licence", null),
+		HOST("host", null),
+		GUI("gui", null),
+		;
+		
+		public final String longName;
+		public final String shortName;
+		
+		Option(String longName, Character charName) {
+			this.longName = longName;
+			this.shortName = charName==null ? null : charName.toString();
+		}
+		
+		public boolean matches(String arg) {
+			if (arg.equals("-"+longName)) {
+				return true;
+			}
+			return shortName==null ? false : arg.equals("-"+shortName);
+		}
+	}
+
+	
+    private static final int DEFAULT_PORT = 8080;
+    
+    private static String DEFAULT_HOST = "localhost";
+    
+	/**
      * Common mime type for dynamic content: binary
      */
     public static final String MIME_DEFAULT_BINARY = "application/octet-stream";
@@ -90,7 +141,7 @@ public class SimpleWebServer extends NanoHTTPD {
             + "OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.";
     private static Map<String, WebServerPlugin> mimeTypeHandlers = new HashMap<String, WebServerPlugin>();
     private final List<File> rootDirs;
-    private final boolean quiet;
+    private boolean quiet;
 
     public SimpleWebServer(String host, int port, File wwwroot, boolean quiet) {
         super(host, port);
@@ -115,37 +166,84 @@ public class SimpleWebServer extends NanoHTTPD {
     public void init() {
     }
 
+    public void setQuiet(boolean q) {
+    	this.quiet = q;
+    }
+    
+    private static void fatal(String msg) {
+    	PrintStream ps = System.err;
+    	ps.println("?"+msg);
+    	ps.println("Usage: "+SimpleWebServer.class.getSimpleName()+" [ options ]");
+    	ps.println("Starts a web server");
+    	ps.println("Options:");
+    	ps.println("-gui             display a user interface for monitoring");
+    	ps.println("-d DIR           add DIR as a root dir from which to serve files");
+    	ps.println("                 default is only the current directory");
+    	ps.println("-h HOSTNAME      listen as hostname (default "+DEFAULT_HOST+")");
+    	ps.println("-p PORT          listen on port (default "+DEFAULT_PORT+")");
+    	ps.println("-q               start in 'quiet' mode (default is ! gui)");
+    	ps.println("-v               start in 'verbose' mode (default is ! gui)");
+    	ps.println("-X:option-value  add an option value which is passed to plugins");
+    	ps.println();
+    	ps.println("---------------------------------------------------------------");
+    	ps.println(LICENCE);
+    	System.exit(1);
+    }
     /**
      * Starts as a standalone file server and waits for Enter.
      */
     public static void main(String[] args) {
         // Defaults
-        int port = 8080;
+        int port = DEFAULT_PORT;
 
-        String host = "127.0.0.1";
+        try {
+			InetAddress addr = InetAddress.getLocalHost();
+			DEFAULT_HOST = addr.getHostAddress();
+		} catch (UnknownHostException e) {
+			DEFAULT_HOST = "127.0.0.1";
+		}
+        
+        String host = DEFAULT_HOST;
         List<File> rootDirs = new ArrayList<File>();
+        boolean gui = false;
         boolean quiet = false;
         Map<String, String> options = new HashMap<String, String>();
 
         // Parse command-line, with short and long versions of the options.
         for (int i = 0; i < args.length; ++i) {
-            if (args[i].equalsIgnoreCase("-h") || args[i].equalsIgnoreCase("--host")) {
-                host = args[i + 1];
-            } else if (args[i].equalsIgnoreCase("-p") || args[i].equalsIgnoreCase("--port")) {
-                port = Integer.parseInt(args[i + 1]);
-            } else if (args[i].equalsIgnoreCase("-q") || args[i].equalsIgnoreCase("--quiet")) {
+        	String argi = args[i];
+            if (Option.HOST.matches(argi)) {
+            	if (++i >= args.length || args[i].startsWith("-")) {
+            		fatal("missing value for "+argi);
+            	}
+                host = args[i];
+            } else if (Option.PORT.matches(argi)) {
+            	if (++i >= args.length || args[i].startsWith("-")) {
+            		fatal("missing value for "+argi);
+            	}
+                port = Integer.parseInt(args[i]);
+            } else if (Option.QUIET.matches(argi)) {
                 quiet = true;
-            } else if (args[i].equalsIgnoreCase("-d") || args[i].equalsIgnoreCase("--dir")) {
-                rootDirs.add(new File(args[i + 1]).getAbsoluteFile());
-            } else if (args[i].equalsIgnoreCase("--licence")) {
+            } else if (Option.DIR.matches(argi)) {
+            	if (++i >= args.length || args[i].startsWith("-")) {
+            		fatal("missing value for "+argi);
+            	}
+                rootDirs.add(new File(args[i]).getAbsoluteFile());
+            } else if (Option.GUI.matches(argi)) {
+                gui = true;
+            } else if (Option.LICENCE.matches(argi)) {
                 System.out.println(LICENCE + "\n");
-            } else if (args[i].startsWith("-X:")) {
-                int dot = args[i].indexOf('=');
+            } else if (argi.startsWith("-X:")) {
+                int dot = argi.indexOf('=');
                 if (dot > 0) {
-                    String name = args[i].substring(0, dot);
-                    String value = args[i].substring(dot + 1, args[i].length());
+                    String name = argi.substring(0, dot);
+                    String value = argi.substring(dot + 1, argi.length());
                     options.put(name, value);
+                } else {
+                	fatal("missing value for "+argi);
                 }
+            } else {
+            	fatal("unsupported arg: "+argi);
             }
         }
 
@@ -153,21 +251,21 @@ public class SimpleWebServer extends NanoHTTPD {
             rootDirs.add(new File(".").getAbsoluteFile());
         }
 
-        options.put("host", host);
-        options.put("port", ""+port);
-        options.put("quiet", String.valueOf(quiet));
-        StringBuilder sb = new StringBuilder();
-        for (File dir : rootDirs) {
-            if (sb.length() > 0) {
-                sb.append(":");
-            }
-            try {
-                sb.append(dir.getCanonicalPath());
-            } catch (IOException ignored) {}
-        }
-        options.put("home", sb.toString());
+        addBasicOptions(host, port, rootDirs, quiet, options);
+        
+        loadWebServerPlugins(quiet, options);
+        
+        final SimpleWebServer server = new SimpleWebServer(host, port, rootDirs, quiet);
 
-        ServiceLoader<WebServerPluginInfo> serviceLoader = ServiceLoader.load(WebServerPluginInfo.class);
+        if (gui) {
+        	startGui(port, rootDirs, quiet, server);
+        }
+
+		ServerRunner.executeInstance(server, ! gui);
+    }
+    
+    public static void loadWebServerPlugins(boolean quiet, Map<String, String> options) {
+		ServiceLoader<WebServerPluginInfo> serviceLoader = ServiceLoader.load(WebServerPluginInfo.class);
         for (WebServerPluginInfo info : serviceLoader) {
             String[] mimeTypes = info.getMimeTypes();
             for (String mime : mimeTypes) {
@@ -185,9 +283,105 @@ public class SimpleWebServer extends NanoHTTPD {
                 registerPluginForMimeType(indexFiles, mime, info.getWebServerPlugin(mime), options);
             }
         }
+	}
+    
+	private static void addBasicOptions(String host, int port, List<File> rootDirs, boolean quiet, Map<String, String> options) {
+		options.put(Option.HOST.longName, host);
+        options.put(Option.PORT.longName, Integer.toString(port));
+        options.put(Option.QUIET.longName, String.valueOf(quiet));
+        StringBuilder sb = new StringBuilder();
+        for (File dir : rootDirs) {
+            if (sb.length() > 0) {
+                sb.append(":");
+            }
+            try {
+                sb.append(dir.getCanonicalPath());
+            } catch (IOException ignored) {}
+        }
+        options.put(Option.HOME.longName, sb.toString());
+	}
+	
+	private static void startGui(int port, List<File> rootDirs, boolean quiet, final SimpleWebServer server) {
+		StringBuilder tmp = new StringBuilder("Serving files from:\n");
+		for (File dir : rootDirs) {
+			tmp.append(dir.getPath()).append("\n");
+		}
+		tmp.append("===========\n");
+		
+		final JFrame frame = new JFrame("Web Server");
+		frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+		final JTextArea messages = new JTextArea(tmp.toString());
+		JScrollPane scrollPane = new JScrollPane(messages, JScrollPane.VERTICAL_SCROLLBAR_ALWAYS, JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+		final JScrollBar verticalScrollBar = scrollPane.getVerticalScrollBar();
 
-        ServerRunner.executeInstance(new SimpleWebServer(host, port, rootDirs, quiet));
-    }
+		JButton clear = new JButton(new AbstractAction("Clear") {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				messages.setText("");
+			}
+		});
+
+		final JCheckBox quietOption = new JCheckBox("Quiet", quiet);
+		quietOption.addActionListener(new ActionListener() {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				server.setQuiet(quietOption.isSelected());
+			}
+		});
+
+		final boolean[] follow = new boolean[] { true };
+		final JCheckBox followTail = new JCheckBox("Follow", follow[0]);
+
+		followTail.addActionListener(new ActionListener() {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				follow[0] = followTail.isSelected();
+			}
+		});
+		
+		
+		OutputStream os = new OutputStream() {
+			@Override
+			public void write(int b) throws IOException {
+				char ch = (char) b;
+				messages.append(new Character(ch).toString());
+				if (ch=='\n' && follow[0]) {
+					verticalScrollBar.setValue(verticalScrollBar.getMaximum());
+				}
+			}
+		};
+		
+		PrintStream ps = new PrintStream(os);
+		
+		System.setErr(ps);
+		System.setOut(ps);
+		
+		Box box = Box.createHorizontalBox();
+		box.add(clear);
+		box.add(followTail);
+		box.add(quietOption);
+		
+		Container cp = frame.getContentPane();
+		cp.add(scrollPane, BorderLayout.CENTER);
+		cp.add(box, BorderLayout.SOUTH);
+
+		frame.pack();
+		frame.setSize(640, 480);
+		
+		frame.setVisible(true);
+		
+		server.addPropertyChangeListener(SimpleWebServer.PROPERTY_RUNSTATE, new PropertyChangeListener() {
+			@Override
+			public void propertyChange(PropertyChangeEvent evt) {
+				StringBuilder sb = new StringBuilder("Web Server: ");
+				sb.append(server.getListeningAddressPort());
+				if ( ! server.isAlive()) {
+					sb.append(" INACTIVE");
+				}
+				frame.setTitle(sb.toString());
+			}
+		});
+	}
 
     protected static void registerPluginForMimeType(String[] indexFiles, String mimeType, WebServerPlugin plugin, Map<String, String> commandLineOptions) {
         if (mimeType == null || plugin == null) {
@@ -208,15 +402,15 @@ public class SimpleWebServer extends NanoHTTPD {
         plugin.initialize(commandLineOptions);
     }
 
-    private File getRootDir() {
+    public File getRootDir() {
         return rootDirs.get(0);
     }
 
-    private List<File> getRootDirs() {
-        return rootDirs;
+    public List<File> getRootDirs() {
+        return Collections.unmodifiableList(rootDirs);
     }
 
-    private void addWwwRootDir(File wwwroot) {
+    public void addWwwRootDir(File wwwroot) {
         rootDirs.add(wwwroot);
     }
 
