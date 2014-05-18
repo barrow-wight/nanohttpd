@@ -1562,7 +1562,7 @@ public abstract class NanoHTTPD {
          */
         public void unloadQueue(Response response) {
             for (Cookie cookie : queue) {
-                response.addHeader("Set-Cookie", cookie.getHTTPHeader());
+                response.addHeader("Set-Cookie", cookie.getHTTPHeader(), true);
             }
         }
     }
